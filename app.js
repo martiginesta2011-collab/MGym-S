@@ -1,80 +1,279 @@
-<!doctype html>
-<html lang="es">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>AI Gym Coach — Prototipo</title>
-  <link rel="stylesheet" href="styles.css" />
-  <meta name="description" content="Prototipo: corrección de técnica (squat & plank) usando MoveNet en el navegador.">
-</head>
-<body>
-  <div id="app">
-    <header>
-      <div class="brand">
-        <img id="logo" src="logo.svg" alt="MGym's logo" />
-        <h1>AI Gym Coach</h1>
-      </div>
-      <div class="controls">
-        <select id="exercise">
-          <option value="squat">Sentadilla (Squat)</option>
-          <option value="plank">Plancha (Plank)</option>
-        </select>
-        <button id="startBtn">Iniciar</button>
-        <button id="stopBtn" disabled>Detener</button>
-      </div>
-    </header>
+// AI Gym Coach - Prototipo (español)
+// Requiere: tf.min.js y @tensorflow-models/pose-detection (incluir via CDN en index.html)
 
-    <main>
-      <div class="stage">
-        <video id="video" playsinline muted></video>
-        <canvas id="overlay"></canvas>
-      </div>
+let video = document.getElementById('video');
+let canvas = document.getElementById('overlay');
+let ctx = canvas.getContext('2d');
 
-      <aside class="info">
-        <div class="card">
-          <h2>Estado</h2>
-          <p id="status">Esperando inicio</p>
-        </div>
+const startBtn = document.getElementById('startBtn');
+const stopBtn = document.getElementById('stopBtn');
+const exerciseSelect = document.getElementById('exercise');
 
-        <div class="card">
-          <h2>Ángulos</h2>
-          <ul id="angles">
-            <li>Rodilla izq: —</li>
-            <li>Rodilla der: —</li>
-            <li>Cadera izq: —</li>
-            <li>Cadera der: —</li>
-            <li>Torso (plank): —</li>
-          </ul>
-        </div>
+const statusEl = document.getElementById('status');
+const anglesEl = document.getElementById('angles');
+const repsEl = document.getElementById('reps');
+const feedbackEl = document.getElementById('feedback');
 
-        <div class="card">
-          <h2>Repeticiones</h2>
-          <p id="reps">0</p>
-        </div>
+let detector = null;
+let rafId = null;
+let running = false;
+let detectionInterval = 100; // ms entre inferencias
+let lastDetection = 0;
 
-        <div class="card">
-          <h2>Feedback</h2>
-          <p id="feedback">—</p>
-        </div>
+// Estado para conteo de sentadillas
+let squatState = 'top'; // 'top' | 'bottom'
+let squatReps = 0;
 
-        <div class="card">
-          <h2>Logo</h2>
-          <p><a id="logoLink" href="logo.svg" target="_blank" style="color: #00C853; text-decoration: none;">Abrir logo (archivo local)</a></p>
-          <p><a href="data:image/svg+xml;charset=UTF-8,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20width%3D%22220%22%20height%3D%2260%22%20viewBox%3D%220%200%20220%2060%22%3E%3Ctext%20x%3D%2210%22%20y%3D%2242%22%20font-family%3D%22Inter%2C%20Roboto%2C%20Arial%22%20font-size%3D%2236%22%20fill%3D%22%2300C853%22%20font-weight%3D%22700%22%3EMGym%27s%3C/text%3E%3C/svg%3E" target="_blank" style="color: #00C853; text-decoration: none;">Abrir logo (data URL)</a></p>
-        </div>
-      </aside>
-    </main>
+// Ajustes/umbrales (puedes modificar)
+const SQUAT = {
+  kneeTop: 150,   // ángulo rodilla cuando está arriba (> = top)
+  kneeBottom: 100 // ángulo rodilla cuando está abajo (<= bottom)
+};
+const PLANK = {
+  torsoMinAngle: 160 // hombro-cadera-tobillo (cerca de 180 = recto)
+};
 
-    <footer>
-      <small>Procesado local en el navegador • Tema: negro & verde</small>
-    </footer>
-  </div>
+// Conexiones para dibujar esqueleto (COCO-ish)
+const connections = [
+  [0,1],[0,2],[1,3],[2,4],
+  [5,6],[5,7],[7,9],[6,8],[8,10],
+  [11,12],[5,11],[6,12],[11,13],[13,15],[12,14],[14,16]
+];
 
-  <!-- TensorFlow.js -->
-  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.21.0/dist/tf.min.js"></script>
-  <!-- Pose Detection -->
-  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection"></script>
+// Cargar la cámara
+async function setupCamera(){
+  console.log('setupCamera: solicitando cámara');
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio:false,
+    video:{facingMode:'user'}
+  });
+  video.srcObject = stream;
+  await video.play();
 
-  <script src="app.js"></script>
-</body>
-</html>
+  // ajustar canvas al video
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  video.width = video.videoWidth;
+  video.height = video.videoHeight;
+  console.log('setupCamera: cámara lista', video.videoWidth, video.videoHeight);
+}
+
+// Crear detector MoveNet
+async function createDetector(){
+  statusEl.textContent = 'Cargando modelo...';
+  console.log('createDetector: cargando modelo MoveNet');
+  const model = poseDetection.SupportedModels.MoveNet;
+  const detectorConfig = {modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING};
+  detector = await poseDetection.createDetector(model, detectorConfig);
+  statusEl.textContent = 'Modelo cargado';
+  console.log('createDetector: detector listo');
+}
+
+// Calcular ángulo entre tres puntos A-B-C (B articulación central). Coordenadas en pixel.
+function angleBetween(A,B,C){
+  const BAx = A.x - B.x, BAy = A.y - B.y;
+  const BCx = C.x - B.x, BCy = C.y - B.y;
+  const dot = BAx*BCx + BAy*BCy;
+  const magBA = Math.hypot(BAx, BAy);
+  const magBC = Math.hypot(BCx, BCy);
+  if(magBA === 0 || magBC === 0) return null;
+  const cos = Math.max(-1, Math.min(1, dot / (magBA * magBC)));
+  return Math.acos(cos) * (180/Math.PI);
+}
+
+// Dibuja keypoints y líneas
+function drawPose(keypoints){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  // Dibujar conexiones
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = '#00C853';
+  for(const [i,j] of connections){
+    const a = keypoints[i], b = keypoints[j];
+    if(a && b && a.score > 0.25 && b.score > 0.25){
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+    }
+  }
+
+  // Dibujar puntos
+  for(const p of keypoints){
+    if(!p) continue;
+    if(p.score > 0.25){
+      ctx.beginPath();
+      ctx.fillStyle = '#00C853';
+      ctx.arc(p.x, p.y, 4, 0, Math.PI*2);
+      ctx.fill();
+    }
+  }
+}
+
+// Obtener keypoint por nombre si existe (pose.keypoints tiene 'name' en MoveNet)
+function kpByName(keypoints, name){
+  return keypoints.find(k=>k.name===name) || null;
+}
+
+// Procesar pose y calcular ángulos/feedback
+function processPose(pose){
+  if(!pose || !pose.keypoints) return;
+
+  const k = pose.keypoints;
+
+  const leftShoulder = kpByName(k,'left_shoulder');
+  const rightShoulder = kpByName(k,'right_shoulder');
+  const leftHip = kpByName(k,'left_hip');
+  const rightHip = kpByName(k,'right_hip');
+  const leftKnee = kpByName(k,'left_knee');
+  const rightKnee = kpByName(k,'right_knee');
+  const leftAnkle = kpByName(k,'left_ankle');
+  const rightAnkle = kpByName(k,'right_ankle');
+
+  // Calcular ángulos
+  const leftKneeAngle = (leftHip && leftKnee && leftAnkle) ? angleBetween(leftHip,leftKnee,leftAnkle) : null;
+  const rightKneeAngle = (rightHip && rightKnee && rightAnkle) ? angleBetween(rightHip,rightKnee,rightAnkle) : null;
+
+  const leftHipAngle = (leftShoulder && leftHip && leftKnee) ? angleBetween(leftShoulder,leftHip,leftKnee) : null;
+  const rightHipAngle = (rightShoulder && rightHip && rightKnee) ? angleBetween(rightShoulder,rightHip,rightKnee) : null;
+
+  // Torso angle for plank: shoulder - hip - ankle (average sides)
+  let torsoAngle = null;
+  if(leftShoulder && leftHip && leftAnkle){
+    torsoAngle = angleBetween(leftShoulder,leftHip,leftAnkle);
+  } else if(rightShoulder && rightHip && rightAnkle){
+    torsoAngle = angleBetween(rightShoulder,rightHip,rightAnkle);
+  }
+
+  // Actualizar UI de ángulos
+  anglesEl.children[0].textContent = `Rodilla izq: ${leftKneeAngle ? leftKneeAngle.toFixed(0)+'°' : '—'}`;
+  anglesEl.children[1].textContent = `Rodilla der: ${rightKneeAngle ? rightKneeAngle.toFixed(0)+'°' : '—'}`;
+  anglesEl.children[2].textContent = `Cadera izq: ${leftHipAngle ? leftHipAngle.toFixed(0)+'°' : '—'}`;
+  anglesEl.children[3].textContent = `Cadera der: ${rightHipAngle ? rightHipAngle.toFixed(0)+'°' : '—'}`;
+  anglesEl.children[4].textContent = `Torso (plank): ${torsoAngle ? torsoAngle.toFixed(0)+'°' : '—'}`;
+
+  // Lógica por ejercicio
+  const exercise = exerciseSelect.value;
+  if(exercise === 'squat'){
+    const kneeAvg = (() => {
+      if(leftKneeAngle && rightKneeAngle) return (leftKneeAngle + rightKneeAngle)/2;
+      return leftKneeAngle || rightKneeAngle || null;
+    })();
+
+    if(kneeAvg){
+      if(squatState === 'top' && kneeAvg <= SQUAT.kneeBottom){
+        squatState = 'bottom';
+        statusEl.textContent = 'Abajo (bottom)';
+      } else if(squatState === 'bottom' && kneeAvg >= SQUAT.kneeTop){
+        squatState = 'top';
+        squatReps += 1;
+        repsEl.textContent = squatReps;
+        statusEl.textContent = 'Arriba (top)';
+      }
+    }
+
+    let fb = [];
+    if(kneeAvg){
+      if(kneeAvg > 160) fb.push('Extiende piernas completamente (arriba).');
+      else if(kneeAvg < 80) fb.push('Profundidad alta — controla la espalda.');
+    } else {
+      fb.push('Posición no detectada con suficiente confianza.');
+    }
+
+    const hipAvg = (leftHipAngle && rightHipAngle) ? (leftHipAngle + rightHipAngle)/2 : (leftHipAngle || rightHipAngle || null);
+    if(hipAvg && hipAvg < 70) fb.push('Flexión de cadera excesiva: cuida la espalda.');
+
+    feedbackEl.textContent = fb.join(' ');
+  } else if(exercise === 'plank'){
+    let fb = [];
+    if(torsoAngle){
+      if(torsoAngle >= PLANK.torsoMinAngle){
+        statusEl.textContent = 'Buena línea';
+        fb.push('Mantén línea del cuerpo recta.');
+      } else {
+        statusEl.textContent = 'Cadera baja/alta';
+        fb.push('Ajusta la cadera para alinear hombros-cadera-tobillos.');
+      }
+    } else {
+      statusEl.textContent = 'Posición no detectada';
+      fb.push('Acércate a la cámara y asegúrate de que se vean hombros, caderas y tobillos.');
+    }
+    feedbackEl.textContent = fb.join(' ');
+  }
+}
+
+// Loop principal: detectar y dibujar
+async function renderLoop(){
+  if(!running) return;
+  const now = performance.now();
+  if(now - lastDetection >= detectionInterval){
+    lastDetection = now;
+    try{
+      const poses = await detector.estimatePoses(video, {flipHorizontal: true});
+      const pose = poses && poses[0] ? poses[0] : null;
+      if(pose) drawPose(pose.keypoints);
+      processPose(pose);
+    }catch(e){
+      console.error('Error en estimación de poses', e);
+    }
+  }
+  rafId = requestAnimationFrame(renderLoop);
+}
+
+// Start / Stop lógica
+async function start(){
+  startBtn.disabled = true;
+  stopBtn.disabled = false;
+  try{
+    if(!video.srcObject){
+      await setupCamera();
+    }
+    if(!detector){
+      await createDetector();
+    }
+    running = true;
+    squatReps = 0;
+    repsEl.textContent = '0';
+    statusEl.textContent = 'En ejecución';
+    lastDetection = 0;
+    console.log('start: iniciando bucle');
+    renderLoop();
+  }catch(err){
+    console.error('Error al iniciar:', err);
+    statusEl.textContent = 'Error al iniciar, mira la consola';
+    startBtn.disabled = false;
+    stopBtn.disabled = true;
+  }
+}
+
+function stop(){
+  startBtn.disabled = false;
+  stopBtn.disabled = true;
+  running = false;
+  statusEl.textContent = 'Detenido';
+  if(rafId) cancelAnimationFrame(rafId);
+  if(video.srcObject){
+    const tracks = video.srcObject.getTracks();
+    tracks.forEach(t=>t.stop());
+    video.srcObject = null;
+  }
+  console.log('stop: detenido');
+}
+
+// Eventos UI
+startBtn.addEventListener('click', ()=>{ start().catch(console.error); });
+stopBtn.addEventListener('click', stop);
+
+// ajustar canvas si cambia tamaño del video
+video.addEventListener('loadeddata', ()=>{
+  if(video.videoWidth){
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+  }
+});
+
+window.addEventListener('resize', ()=>{
+  if(video.videoWidth){
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+  }
+});
