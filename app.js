@@ -220,7 +220,7 @@ async function renderLoop(){
 }
 
 // Start / Stop lógica
-async function start(){
+async function start(alert('start() ejecutado');){
   startBtn.disabled = true;
   stopBtn.disabled = false;
   try{
