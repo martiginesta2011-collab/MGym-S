@@ -1,4 +1,5 @@
-// AI Gym Coach - Prototipo (español)
+(commit): alert('app.js cargado');
+// MGym'S (español)
 // Requiere: tf.min.js y @tensorflow-models/pose-detection (incluir via CDN en index.html)
 
 let video = document.getElementById('video');
