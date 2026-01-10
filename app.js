@@ -1,4 +1,3 @@
-(commit): alert('app.js cargado');
 // MGym'S (español)
 // Requiere: tf.min.js y @tensorflow-models/pose-detection (incluir via CDN en index.html)
 
@@ -221,7 +220,7 @@ async function renderLoop(){
 }
 
 // Start / Stop lógica
-async function start(alert('start() ejecutado');){
+async function start(alert();){
   startBtn.disabled = true;
   stopBtn.disabled = false;
   try{
