@@ -276,4 +276,83 @@ window.addEventListener('resize', ()=>{
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
   }
+});/* ============================
+   RESUMEN FINAL PRO – MGym’S
+   ============================ */
+
+// Variables globals per registrar estadístiques
+let historialErrores = [];
+let historialAciertos = 0;
+let historialFrames = 0;
+
+// Funció per registrar dades per frame
+function registrarEstadisticas(resultado) {
+    historialFrames++;
+
+    if (resultado.errors && resultado.errors.length > 0) {
+        historialErrores.push(...resultado.errors);
+    } else {
+        historialAciertos++;
+    }
+}
+
+// Detectar quan el vídeo acaba
+video.addEventListener("ended", () => {
+    generarResumenFinal();
 });
+
+// Funció principal del resum final
+function generarResumenFinal() {
+    const totalErrores = historialErrores.length;
+    const totalFrames = historialFrames;
+    const porcentajeAcierto = totalFrames > 0 
+        ? ((historialAciertos / totalFrames) * 100).toFixed(1)
+        : 0;
+
+    // Comptar errors repetits
+    const contador = {};
+    historialErrores.forEach(err => {
+        contador[err] = (contador[err] || 0) + 1;
+    });
+
+    // Ordenar errors per freqüència
+    const erroresOrdenados = Object.entries(contador)
+        .sort((a, b) => b[1] - a[1])
+        .map(([error, veces]) => `• ${error} (${veces} vegades)`);
+
+    // Construir el resum final
+    const resumen = `
+        <h3>Resum final del exercici</h3>
+        <p><strong>Puntuació global:</strong> ${porcentajeAcierto}/100</p>
+        <p><strong>Frames analitzats:</strong> ${totalFrames}</p>
+        <p><strong>Errors totals:</strong> ${totalErrores}</p>
+
+        <h4>Errors més freqüents:</h4>
+        ${erroresOrdenados.length > 0 ? erroresOrdenados.join("<br>") : "Cap error detectat"}
+
+        <h4>Punts forts:</h4>
+        <p>${generarPuntsForts(porcentajeAcierto)}</p>
+
+        <h4>Recomanació final:</h4>
+        <p>${generarRecomendacion(porcentajeAcierto)}</p>
+    `;
+
+    document.getElementById("resultats").innerHTML = resumen;
+}
+
+// Text segons puntuació
+function generarPuntsForts(score) {
+    if (score > 85) return "Execució molt sòlida i estable.";
+    if (score > 70) return "Bona base tècnica amb petits detalls a millorar.";
+    if (score > 50) return "Tècnica acceptable però amb errors repetits.";
+    return "Cal reforçar la tècnica bàsica abans d’augmentar càrrega.";
+}
+
+// Recomanació final segons puntuació
+function generarRecomendacion(score) {
+    if (score > 85) return "Mantén la tècnica i augmenta la càrrega de forma progressiva.";
+    if (score > 70) return "Ajusta petits detalls per millorar l’eficiència del moviment.";
+    if (score > 50) return "Controla la postura i el rang de moviment per evitar errors.";
+    return "Redueix la càrrega i centra’t en la tècnica fonamental.";
+}
+
